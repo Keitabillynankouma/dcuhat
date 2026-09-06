@@ -1,0 +1,15 @@
+# Dependances pour un deploiement SANS Docker, sur un hebergement qui ne
+# permet pas d'installer de paquets systeme (Render, Koyeb en mode Python,
+# PythonAnywhere...).
+#
+#   pip install -r requirements-sans-docker.txt
+#
+# Les deux roues ajoutees embarquent GDAL, GEOS, PROJ et leurs dependances
+# dans site-packages ; la plateforme les detecte seule (apps/common/geolibs.py).
+# Elles pesent une centaine de megaoctets : inutile de les installer si le
+# systeme fournit deja GDAL.
+
+-r requirements.txt
+
+rasterio==1.4.3
+shapely==2.0.6

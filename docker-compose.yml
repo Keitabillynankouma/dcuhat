@@ -1,0 +1,114 @@
+# DCUHAT — pile complete : base PostGIS, stockage objet, cache, API, taches et
+# interface web. Une seule commande pour le poste de developpement comme pour
+# le serveur communal.
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dcuhat}
+      POSTGRES_USER: ${POSTGRES_USER:-dcuhat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dcuhat}
+    volumes:
+      - donnees_db:/var/lib/postgresql/data
+      - ./deploy/sauvegardes:/sauvegardes
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dcuhat}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-dcuhat}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-dcuhat-secret}
+    volumes:
+      - donnees_minio:/data
+    ports:
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  creation_bucket:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set dcuhat http://minio:9000 ${S3_ACCESS_KEY:-dcuhat} ${S3_SECRET_KEY:-dcuhat-secret};
+      mc mb --ignore-existing dcuhat/${S3_BUCKET:-dcuhat};
+      exit 0;
+      "
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - donnees_redis:/data
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+      - donnees_objets:/var/dcuhat/objets
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             python manage.py collectstatic --noinput &&
+             gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4 --timeout 300"
+    restart: unless-stopped
+
+  worker:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      - api
+      - redis
+    volumes:
+      - ./backend:/app
+      - donnees_objets:/var/dcuhat/objets
+    command: celery -A config worker -l info --concurrency=2
+    restart: unless-stopped
+
+  beat:
+    build: ./backend
+    env_file: .env
+    depends_on:
+      - redis
+    volumes:
+      - ./backend:/app
+    command: celery -A config beat -l info
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api/v1}
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+
+volumes:
+  donnees_db:
+  donnees_minio:
+  donnees_redis:
+  donnees_objets:

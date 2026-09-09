@@ -1,95 +1,178 @@
-# Déployer DCUHAT gratuitement
+# Mettre DCUHAT en ligne gratuitement
 
-Ce document décrit une mise en ligne à coût nul, valable pour une **démonstration
-à la Direction** ou une recette. Sa dernière section explique pourquoi ce n'est
-pas une solution de production, et ce que coûterait la vraie.
+Ce document décrit une mise en ligne à coût nul, de bout en bout, pour une
+**démonstration à la Direction** ou une recette avec quelques agents. Sa
+dernière partie dit franchement où sont les limites et à partir de quand il
+faut passer à un hébergement payant.
 
----
-
-## 1. Ce qu'il faut héberger, et où
-
-La plateforme a quatre besoins, dont trois ont une offre gratuite crédible.
-
-| Besoin | Service retenu | Offre gratuite | Pourquoi celui-là |
-|---|---|---|---|
-| Base PostgreSQL **avec PostGIS** | **Neon** | 3 Gio par branche | La contrainte est PostGIS, pas la taille : beaucoup d'offres gratuites ne l'autorisent pas. Neon le prend en charge. |
-| API Django **avec GDAL** | **Koyeb** ou **Render** | 512 Mo RAM | Deux chemins possibles : image Docker, ou environnement Python natif (voir § 5 bis). |
-| Fichiers déposés | **Cloudflare R2** | 10 Go, sortie réseau gratuite | Compatible S3, donc directement utilisable par la plateforme. Les 10 Go sont la vraie limite du dispositif. |
-| Interface web | **Cloudflare Pages** ou **Netlify** | illimité en pratique | Ce ne sont que des fichiers statiques. |
-
-Redis et le worker Celery ne sont pas déployés : en gardant
-`CELERY_TASK_ALWAYS_EAGER=1`, l'extraction géospatiale s'exécute dans la requête.
-Suffisant pour une démonstration, inacceptable en production avec de gros levés.
-
-**Alternative à Koyeb : Render.** Offre gratuite plus généreuse en heures (750 h/mois)
-mais l'instance s'endort après 15 minutes au lieu d'une heure, et sa base PostgreSQL
-gratuite **expire au bout de 30 jours** — raison pour laquelle la base est chez Neon
-dans tous les cas.
+Compter une à deux heures la première fois. Aucune carte bancaire n'est requise.
 
 ---
 
-## 1 bis. La variante **Render + Supabase**
+## 1. L'assemblage retenu
 
-C'est l'assemblage le plus simple : **deux comptes au lieu de quatre**, Supabase
-fournissant à la fois la base PostGIS et le stockage des fichiers.
+Deux comptes suffisent : **Supabase** pour les données, **Render** pour
+l'application.
 
-| Besoin | Service | Gratuit |
+| Besoin | Service | Offre gratuite |
 |---|---|---|
-| Base PostgreSQL + PostGIS | **Supabase** | 500 Mo |
-| Stockage des fichiers | **Supabase Storage** (compatible S3) | 1 Go, 50 Mo par fichier |
-| API Django | **Render** (Python natif ou Docker) | 750 h/mois |
-| Interface web | **Render Static Site** | inclus |
+| Base PostgreSQL **avec PostGIS** | Supabase | 500 Mo |
+| Fichiers déposés par les agents | Supabase Storage (compatible S3) | 1 Go, 50 Mo par fichier |
+| API Django | Render — Web Service | 750 h/mois |
+| Interface web | Cloudflare Pages *(recommandé)* ou Render Static Site | gratuit |
 
-### Côté Supabase
+**Pourquoi Supabase pour la base.** La contrainte n'est pas la taille, c'est
+**PostGIS** : beaucoup d'hébergeurs PostgreSQL gratuits ne l'autorisent pas.
+Supabase l'active en un clic, et fournit en prime le stockage des fichiers —
+d'où deux comptes au lieu de quatre.
 
-1. Créer un projet, en notant la **région** (elle servira de `S3_REGION`).
-2. *Database → Extensions* : activer **postgis**. Vérifier ensuite dans
-   *SQL Editor* :
+**Pourquoi Cloudflare Pages pour l'interface.** Render facture la bande
+passante au-delà de 5 Go par mois, tous services confondus. Servir l'interface
+depuis Cloudflare Pages, dont l'offre gratuite ne la facture pas, sort
+l'essentiel du trafic de ce compteur. Render ne sert plus que des réponses JSON
+de quelques kilo-octets.
+
+**Ce qui n'est pas déployé.** Ni Redis, ni worker Celery : en gardant
+`CELERY_TASK_ALWAYS_EAGER=1`, l'analyse géospatiale s'exécute pendant la
+requête. C'est suffisant pour une démonstration ; c'est insuffisant en
+production avec de gros levés.
+
+---
+
+## 2. Préparer le dépôt Git
+
+Le code doit être accessible depuis GitHub.
+
+```powershell
+cd C:\Users\DNTCP\PycharmProjects\dcuhat
+git init
+git add .
+git commit -m "DCUHAT - plateforme documentaire et geospatiale"
+```
+
+**Vérifiez qu'aucun secret ne part avec le commit** — le `.gitignore` exclut
+déjà `.env`, mais un secret publié est un secret perdu :
+
+```powershell
+git status --short | Select-String ".env"
+```
+
+Cette commande ne doit rien afficher. Créez ensuite un dépôt **privé** sur
+GitHub et poussez-y le projet.
+
+---
+
+## 3. Supabase — la base et les fichiers
+
+### 3.1 Créer le projet
+
+1. Compte sur <https://supabase.com>, puis **New project**.
+2. Notez la **région** choisie : elle servira de `S3_REGION`.
+3. Notez le **mot de passe de la base** : il n'est affiché qu'une fois.
+
+### 3.2 Activer PostGIS
+
+*Database → Extensions*, chercher **postgis**, activer. Puis vérifier dans
+*SQL Editor* :
 
 ```sql
 SELECT PostGIS_Version();
 ```
 
-3. *Storage* : créer un bucket **privé** nommé `dcuhat`. Le laisser privé n'est
-   pas un détail : la plateforme sert les fichiers par URL signée à durée
-   limitée, après avoir vérifié les droits de l'agent. Un bucket public
-   contournerait tout le contrôle d'accès.
-4. *Storage → S3 Connection* : générer une paire **Access Key / Secret**, et
-   relever l'URL du point d'accès, de la forme
-   `https://<ref>.storage.supabase.co/storage/v1/s3`.
-5. *Database → Connect* : copier la chaîne du **Session pooler**.
+La réponse doit ressembler à `3.3 USE_GEOS=1 USE_PROJ=1 USE_STATS=1`. Sans
+cette extension, les migrations échoueront dès la première table géospatiale.
 
-> **Prenez bien le « Session pooler », pas la connexion directe.** La connexion
-> directe de Supabase n'est joignable qu'en IPv6, dont Render ne dispose pas :
-> le service ne démarrerait pas. Le pooler de session est en IPv4 sur tous les
-> plans, avec un nom d'utilisateur de la forme `postgres.<ref>` et le port 5432.
+### 3.3 Créer le bucket de fichiers
+
+*Storage → New bucket*, nommé `dcuhat`, laissé **privé**.
+
+> Le laisser privé n'est pas un détail de confort. La plateforme sert chaque
+> document par une URL signée à durée limitée, **après** avoir vérifié les
+> droits de l'agent. Un bucket public rendrait tous les documents accessibles à
+> qui devine leur adresse, et contournerait entièrement le contrôle d'accès.
+
+### 3.4 Relever les identifiants S3
+
+*Storage → S3 Connection* : générer une paire **Access Key / Secret Key**, et
+relever l'URL du point d'accès, de la forme :
+
+```
+https://<ref-du-projet>.storage.supabase.co/storage/v1/s3
+```
+
+### 3.5 Relever la chaîne de connexion
+
+*Database → Connect*, onglet **Session pooler**. Copier la chaîne complète.
+
+> **Prenez le « Session pooler », surtout pas la connexion directe.**
+> La connexion directe de Supabase n'est joignable qu'en **IPv6**, dont Render
+> ne dispose pas : le service ne démarrerait jamais, avec un message d'erreur
+> peu parlant. Le pooler de session est en IPv4 sur tous les plans ; son nom
+> d'utilisateur a la forme `postgres.<ref-du-projet>` et son port est 5432.
 >
-> Évitez le « Transaction pooler » (port 6543) : il ne conserve pas la session
-> entre deux requêtes, ce qui interdit les curseurs côté serveur. La plateforme
-> s'y adapte si vous le configurez, mais le pooler de session est plus simple et
-> sans compromis.
+> Évitez aussi le « Transaction pooler » (port 6543) : il ne conserve pas la
+> session entre deux requêtes, ce qui interdit les curseurs côté serveur. La
+> plateforme s'y adapte si vous le configurez, mais le pooler de session est
+> plus simple et sans compromis.
 
-### Côté Render
+---
 
-Un **Web Service** pour l'API (voir § 5 pour Docker, § 5 bis pour Python natif),
-avec ces variables :
+## 4. Render — l'API
+
+### 4.1 Créer le service
+
+**New → Web Service**, connecté au dépôt GitHub. Deux façons de construire,
+au choix.
+
+**Environnement Python** (le plus simple, recommandé) :
+
+- Language : **Python 3**
+- Root Directory : `backend`
+- Build Command :
+
+```
+pip install -r requirements-sans-docker.txt && python manage.py collectstatic --noinput
+```
+
+- Start Command :
+
+```
+python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 300
+```
+
+Le fichier `requirements-sans-docker.txt` ajoute `rasterio` et `shapely`, dont
+les paquets PyPI embarquent GDAL, GEOS et PROJ. La plateforme les détecte seule
+— aucun chemin à configurer.
+
+**Environnement Docker** (si les conversions de formats sont nécessaires) :
+
+- Language : **Docker**
+- Dockerfile Path : `backend/Dockerfile`
+- Docker Build Context Directory : `backend`
+
+La différence tient en une ligne : sans Docker, l'utilitaire `ogr2ogr` est
+absent, donc **la conversion entre formats géospatiaux ne fonctionne pas**.
+Tout le reste — dépôt, versions, carte, emprises, recherche spatiale, édition,
+croquis, hors ligne — est identique.
+
+### 4.2 Les variables d'environnement
 
 ```ini
 DJANGO_DEBUG=0
-DJANGO_SECRET_KEY=<50 caractères aléatoires>
+DJANGO_SECRET_KEY=<50 caractères aléatoires, différents de ceux du poste local>
 ALLOWED_HOSTS=<votre-service>.onrender.com
-CORS_ALLOWED_ORIGINS=https://<votre-interface>.onrender.com
+CORS_ALLOWED_ORIGINS=https://<votre-interface>.pages.dev
 
 # Une seule ligne : celle du Session pooler, collée telle quelle.
-DATABASE_URL=postgresql://postgres.<ref>:<mot de passe>@aws-0-<region>.pooler.supabase.com:5432/postgres
+DATABASE_URL=postgresql://postgres.<ref>:<mot de passe>@aws-0-<région>.pooler.supabase.com:5432/postgres
 POSTGRES_SSLMODE=require
 
 OBJECT_STORAGE_BACKEND=s3
 S3_ENDPOINT_URL=https://<ref>.storage.supabase.co/storage/v1/s3
 S3_ACCESS_KEY=<Access Key Supabase>
-S3_SECRET_KEY=<Secret Supabase>
+S3_SECRET_KEY=<Secret Key Supabase>
 S3_BUCKET=dcuhat
-S3_REGION=<région du projet, ex. eu-central-1>
+S3_REGION=<région du projet, par exemple eu-central-1>
 
 CELERY_TASK_ALWAYS_EAGER=1
 USE_REDIS_CACHE=0
@@ -97,282 +180,135 @@ GUNICORN_WORKERS=1
 MAX_UPLOAD_SIZE_MB=45
 ```
 
-`DATABASE_URL` remplace à elle seule les cinq variables `POSTGRES_*` : la
-plateforme la décompose. Recopier cinq champs à la main est une source d'erreurs
-de trop.
+Trois de ces valeurs méritent une explication.
 
-`MAX_UPLOAD_SIZE_MB=45` n'est pas arbitraire : Supabase refuse les fichiers de
-plus de **50 Mo** sur l'offre gratuite. Mieux vaut un refus clair de la
-plateforme qu'une erreur du stockage à la fin d'un long téléversement.
+`DATABASE_URL` **remplace à elle seule** les cinq variables `POSTGRES_*` : la
+plateforme la décompose. Recopier cinq champs à la main est une source
+d'erreurs de trop.
 
-Puis un **Static Site** pour l'interface :
+`GUNICORN_WORKERS=1` n'est pas de la prudence excessive : chaque worker charge
+sa propre copie de GDAL et de Django, et deux ne tiennent pas dans 512 Mo.
 
-- Root Directory : `frontend`
-- Build Command : `npm ci && npm run build`
-- Publish Directory : `dist`
-- Variable : `VITE_API_URL=https://<votre-service>.onrender.com/api/v1`
-- Redirect/Rewrite : source `/*`, destination `/index.html`, type **Rewrite** —
-  sans cette règle, recharger une page interne renvoie une erreur 404.
+`MAX_UPLOAD_SIZE_MB=45` évite un échec en fin de téléversement : Supabase
+refuse les fichiers de plus de **50 Mo** sur l'offre gratuite. Mieux vaut un
+refus immédiat et clair de la plateforme qu'une erreur du stockage après trois
+minutes d'attente.
 
-### Le vrai compteur : la bande passante Render
-
-Le site statique est **gratuit à déployer** — mais, comme le service web, il
-consomme la bande passante de l'espace de travail, et l'offre Hobby n'inclut
-que **5 Go par mois** (au-delà : 0,15 $/Go), plus 500 minutes de compilation.
-C'est la limite qui compte réellement, bien avant les 750 heures d'instance.
-
-Bonne nouvelle : l'architecture de la plateforme la ménage presque
-entièrement. Quand le stockage objet sait produire une URL signée — c'est le
-cas de Supabase, de R2 et de MinIO — **le téléchargement d'un document ne passe
-pas par Render** : l'API renvoie une URL à durée limitée et le navigateur va
-chercher le fichier directement chez le fournisseur de stockage. Render ne sert
-donc que l'interface (environ 350 Ko compressés au premier chargement, puis le
-cache du navigateur et le Service Worker) et les réponses JSON de l'API.
-
-Concrètement, 5 Go par mois tiennent largement pour une direction de quelques
-dizaines d'agents. Deux réserves tout de même :
-
-- **Le téléchargement d'un dossier en archive `.zip` traverse l'API**, lui.
-  C'est le seul geste qui peut consommer vite ; à éviter sur les gros dossiers
-  tant qu'on est en offre gratuite.
-- **500 minutes de compilation par mois** : chaque envoi sur le dépôt
-  reconstruit le service et le site, soit deux à quatre minutes à chaque fois.
-  De quoi tenir, mais pas de quoi pousser cinquante fois par jour.
-
-Deux noms de domaine personnalisés sont inclus, certificats TLS compris.
-
-> **Alternative gratuite pour l'interface.** Héberger le site statique sur
-> **Cloudflare Pages** plutôt que sur Render sort complètement l'interface du
-> compteur : son offre gratuite ne facture pas la bande passante. Render ne sert
-> alors que l'API. C'est le réglage à retenir si la démonstration doit durer.
-
-### Les deux autres pièges de cet assemblage
-
-**Le projet Supabase se met en pause après une semaine sans activité**, sur
-l'offre gratuite. Il se réveille depuis le tableau de bord, mais une plateforme
-qui ne répond pas le lundi matin donne une mauvaise impression à la Direction.
-Si la démonstration doit durer, prévoyez une visite hebdomadaire — ou un appel
-automatique à `/api/v1/auth/login/` depuis un service de surveillance gratuit.
-
-**500 Mo de base et 1 Go de fichiers**, c'est deux à trois fois moins que
-l'assemblage Neon + R2 décrit plus haut. Pour une démonstration c'est
-confortable ; pour un pilote avec plusieurs services qui déposent réellement,
-cela se remplit en quelques semaines.
-
----
-
-## 2. Préparer le dépôt
-
-Le code doit être accessible depuis un dépôt Git.
+### 4.3 Générer la clé secrète
 
 ```powershell
-cd C:\Users\DNTCP\PycharmProjects\dcuhat
-git init
-git add .
-git commit -m "DCUHAT — plateforme documentaire et geospatiale"
+python -c "import secrets; print(secrets.token_urlsafe(50))"
 ```
 
-Vérifiez que `.env` **n'est pas** dans le commit — il est déjà exclu par le
-`.gitignore`, mais un secret publié est un secret perdu :
-
-```powershell
-git status --short | Select-String ".env"
-```
-
-Cette commande ne doit rien afficher. Poussez ensuite vers un dépôt GitHub privé.
+Ne réutilisez jamais celle de votre poste : elle signe les jetons de connexion.
 
 ---
 
-## 3. La base de données (Neon)
+## 5. Cloudflare Pages — l'interface
 
-1. Créer un compte sur <https://neon.com>, puis un projet en **PostgreSQL 16**.
-2. Ouvrir la console SQL du projet et activer l'extension :
+**Workers & Pages → Create → Pages → Connect to Git**, sur le même dépôt.
 
-```sql
-CREATE EXTENSION IF NOT EXISTS postgis;
-SELECT PostGIS_Version();
-```
-
-3. Relever la chaîne de connexion. Elle donne les cinq variables dont la
-   plateforme a besoin : hôte, base, utilisateur, mot de passe, port.
-
-> Neon met la base en veille après quelques minutes d'inactivité. La première
-> requête après une pause prend une à deux secondes : c'est normal, et cela
-> s'ajoute au réveil de l'API.
-
----
-
-## 4. Le stockage des fichiers (Cloudflare R2)
-
-C'est l'étape à ne pas sauter. Les hébergements gratuits ont un disque
-**éphémère** : tout fichier écrit sur le disque du conteneur disparaît au
-redémarrage. En mode `local`, la plateforme perdrait les documents déposés.
-
-1. Créer un compte Cloudflare, ouvrir **R2** et créer un bucket `dcuhat`.
-2. Créer un jeton d'API R2 avec les droits *Object Read & Write*.
-3. Relever l'identifiant, la clé secrète et l'URL de point d'accès, de la forme
-   `https://<compte>.r2.cloudflarestorage.com`.
-
----
-
-## 5. L'API (Koyeb)
-
-1. Créer un compte sur <https://koyeb.com>, puis un service à partir du dépôt GitHub.
-2. Type de build : **Dockerfile**, chemin `backend/Dockerfile`, contexte `backend`.
-3. Port d'écoute : **8000** (le conteneur respecte aussi la variable `PORT`).
-4. Renseigner les variables d'environnement :
+- Framework preset : **Vite**
+- Root directory : `frontend`
+- Build command : `npm run build`
+- Build output directory : `dist`
+- Variable d'environnement :
 
 ```ini
-DJANGO_DEBUG=0
-DJANGO_SECRET_KEY=<50 caractères aléatoires, différents du poste local>
-ALLOWED_HOSTS=<votre-service>.koyeb.app
-CORS_ALLOWED_ORIGINS=https://<votre-interface>.pages.dev
-
-POSTGRES_DB=<base Neon>
-POSTGRES_USER=<utilisateur Neon>
-POSTGRES_PASSWORD=<mot de passe Neon>
-POSTGRES_HOST=<hôte Neon>
-POSTGRES_PORT=5432
-
-OBJECT_STORAGE_BACKEND=s3
-S3_ENDPOINT_URL=https://<compte>.r2.cloudflarestorage.com
-S3_ACCESS_KEY=<clé R2>
-S3_SECRET_KEY=<secret R2>
-S3_BUCKET=dcuhat
-S3_REGION=auto
-
-CELERY_TASK_ALWAYS_EAGER=1
-USE_REDIS_CACHE=0
-GUNICORN_WORKERS=1
-MAX_UPLOAD_SIZE_MB=100
+VITE_API_URL=https://<votre-service>.onrender.com/api/v1
 ```
 
-`GUNICORN_WORKERS=1` n'est pas un détail : chaque worker charge sa propre copie de
-GDAL et de Django, et deux workers ne tiennent pas dans 512 Mo.
+Une fois l'adresse `*.pages.dev` connue, revenez dans Render corriger
+`CORS_ALLOWED_ORIGINS` pour qu'elle corresponde **exactement**, protocole
+compris, puis redéployez l'API.
 
-Le conteneur applique les migrations et collecte les fichiers statiques à chaque
-démarrage. Créez ensuite les services et le compte administrateur depuis la console
-Koyeb :
+> Le proxy de développement ne joue que pour `npm run dev`. En ligne,
+> l'interface appelle directement l'API sur un autre domaine : c'est
+> `CORS_ALLOWED_ORIGINS` qui autorise cet appel, et rien d'autre. Une valeur
+> approximative se traduit par une page de connexion qui « ne joint pas le
+> serveur », sans autre explication.
+
+**Variante Render Static Site**, si vous préférez tout garder au même endroit :
+Root Directory `frontend`, Build Command `npm ci && npm run build`, Publish
+Directory `dist`, et surtout une règle **Rewrite** de `/*` vers `/index.html` —
+sans elle, recharger une page interne comme `/administration` renvoie une 404.
+
+---
+
+## 6. Créer les comptes
+
+Depuis Render, onglet **Shell** du service (ou en ajoutant temporairement la
+commande au *Start Command*) :
 
 ```
 python manage.py initialiser_dcuhat --admin-email=votre.adresse@exemple.org
 ```
 
----
+La commande crée les six services de la Direction, leur arborescence métier, et
+le compte administrateur. **Le mot de passe s'affiche une seule fois** :
+notez-le immédiatement.
 
-## 5 bis. Déployer **sans Docker**
-
-Docker n'est pas obligatoire. La seule chose qu'il apportait, c'est GDAL — et il
-existe une autre façon de l'obtenir : les roues PyPI de **rasterio** et
-**shapely** embarquent GDAL, GEOS, PROJ et leurs dépendances directement dans
-`site-packages`. Aucun paquet système à installer, donc aucun besoin d'accès
-root.
-
-La plateforme les détecte toute seule : `apps/common/geolibs.py` cherche, dans
-l'ordre, la variable d'environnement, le bundle PostGIS sous Windows, la
-bibliothèque système, puis les roues PyPI. Il n'y a aucun chemin à configurer.
-
-### Sur Render, en mode Python natif
-
-Créez un **Web Service**, connectez le dépôt, choisissez l'environnement
-**Python 3**, et renseignez :
-
-- **Root Directory** : `backend`
-- **Build Command** :
-
-```
-pip install -r requirements-sans-docker.txt && python manage.py collectstatic --noinput
-```
-
-- **Start Command** :
-
-```
-python manage.py migrate --noinput && gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 1 --timeout 300
-```
-
-Les variables d'environnement sont les mêmes qu'au § 5.
-
-### Vérifier que GDAL est bien vu
-
-Une commande répond à la question, sur n'importe quelle machine :
-
-```
-python manage.py verifier_geo
-```
-
-Elle indique quelle bibliothèque a été retenue, d'où elle vient, quelle version
-se charge réellement, et si PostGIS répond. C'est le premier réflexe quand la
-plateforme refuse de démarrer sur un nouvel hébergement.
-
-### Ce que coûte l'absence de Docker
-
-| | Docker | Python natif |
-|---|---|---|
-| GDAL | paquet système, version maîtrisée | roues PyPI, ~100 Mo de dépendances |
-| `ogr2ogr` (conversions de formats) | présent | **absent** — la conversion entre formats géospatiaux ne fonctionnera pas |
-| Reproductibilité | identique partout | dépend de la version de Python de l'hébergeur |
-| Démarrage | image prête | installation à chaque déploiement, plus lent |
-
-La perte d'`ogr2ogr` est la seule vraie fonctionnalité en moins : tout le reste
-— dépôt, versions, carte, emprises, recherche spatiale, hors ligne — fonctionne
-à l'identique. Si les conversions comptent pour le service du Cadastre, c'est un
-argument pour Docker ; sinon, le mode natif est plus simple.
+Les agents se créent ensuite depuis l'interface, onglet **Administration →
+Agents**, qui génère pour chacun un mot de passe provisoire à transmettre.
 
 ---
 
-## 6. L'interface (Cloudflare Pages)
-
-1. Nouveau projet Pages connecté au même dépôt.
-2. Réglages de build :
-   - Répertoire racine : `frontend`
-   - Commande : `npm run build`
-   - Répertoire de sortie : `dist`
-3. Variable d'environnement de build :
-
-```ini
-VITE_API_URL=https://<votre-service>.koyeb.app/api/v1
-```
-
-Le proxy de développement ne s'applique qu'à `npm run dev` : en ligne, l'interface
-appelle directement l'API. C'est pourquoi `CORS_ALLOWED_ORIGINS` doit contenir
-**exactement** l'adresse de Pages, protocole compris.
-
----
-
-## 7. Recette après mise en ligne
+## 7. Recette avant de montrer la plateforme
 
 - [ ] La page de connexion s'affiche
-- [ ] La connexion aboutit (une ligne `POST /api/v1/auth/login/ 200` dans les journaux)
+- [ ] La connexion aboutit — une ligne `POST /api/v1/auth/login/ 200` dans les journaux Render
+- [ ] `python manage.py verifier_geo` depuis le Shell : GDAL, GEOS et PostGIS répondent
 - [ ] Création d'un espace, puis d'un dossier
 - [ ] Dépôt d'un PDF, puis rechargement de la page : le fichier est toujours là
-- [ ] **Redémarrage du service, puis nouveau rechargement** : le fichier est toujours là — c'est le test qui valide R2
+- [ ] **Redémarrage du service, puis nouveau rechargement : le fichier est toujours là** — c'est ce test, et lui seul, qui prouve que le stockage Supabase est bien utilisé et non le disque éphémère du conteneur
 - [ ] Dépôt d'un GeoJSON : l'emprise apparaît sur la carte
+- [ ] Création d'un croquis, quelques traits, enregistrement d'une version
+- [ ] Rechargement d'une page interne (`/administration`) : elle s'affiche, pas une 404
 - [ ] Mode avion : les dossiers déjà consultés restent accessibles
-- [ ] `python manage.py verifier_geo` depuis la console de l'hébergeur : GDAL, GEOS et PostGIS répondent
-- [ ] Recharger une page interne (par exemple `/administration`) : elle s'affiche au lieu d'une erreur 404
 
 ---
 
 ## 8. Ce que « gratuit » coûte réellement
 
-Ces limites ne sont pas des détails de confort : elles décident de ce que la
-plateforme peut porter.
+Ces limites ne sont pas des désagréments de confort : elles décident de ce que
+la plateforme peut porter.
 
 | Limite | Conséquence concrète |
 |---|---|
-| L'API s'endort après une heure sans trafic | Le premier agent du matin attend 30 à 60 secondes. Les suivants non. |
-| 512 Mo de mémoire | Le téléversement fragmenté réassemble le fichier en mémoire : au-delà d'environ 100 Mo, le conteneur est tué. D'où `MAX_UPLOAD_SIZE_MB=100`. **Un levé topographique de 300 Mo ne passera pas.** |
-| 10 Go de stockage | Quelques milliers de documents bureautiques, ou quelques dizaines d'orthophotos. Les versions comptent double. |
-| Pas de sauvegarde automatique | À faire soi-même : `pg_dump` régulier depuis un poste, et copie du bucket. Une sauvegarde jamais restaurée n'est pas une sauvegarde. |
-| Aucun engagement de disponibilité | Le service peut disparaître ou changer ses conditions du jour au lendemain. |
-| Données hébergées hors du pays | C'est la limite la plus sérieuse. Des plans de lotissement, des titres fonciers et des dossiers nominatifs de demandeurs sont des données publiques sensibles ; leur hébergement relève d'une décision de la Direction, pas d'un choix technique. |
+| **L'API s'endort après 15 minutes sans trafic** | Le premier agent de la matinée attend 30 à 60 secondes. Les suivants non. |
+| **Le projet Supabase se met en pause après une semaine sans activité** | Une plateforme muette le lundi matin fait mauvais effet devant la Direction. Prévoyez une visite hebdomadaire, ou un appel automatique par un service de surveillance gratuit. |
+| **512 Mo de mémoire** | Le téléversement fragmenté réassemble le fichier en mémoire : au-delà d'une centaine de mégaoctets, le conteneur est tué. **Un levé topographique de 300 Mo ne passera pas.** |
+| **50 Mo par fichier, 1 Go au total** | Quelques milliers de documents bureautiques, ou quelques dizaines d'orthophotos. Les versions comptent double. |
+| **500 Mo de base** | Largement suffisant : la base ne contient que les métadonnées, pas les fichiers. |
+| **5 Go de bande passante Render par mois** | Peu contraignant : les téléchargements passent par une URL signée directement chez Supabase, sans traverser Render. Seule l'archive `.zip` d'un dossier transite par l'API — à éviter sur les gros dossiers. |
+| **500 minutes de compilation par mois** | Chaque envoi sur le dépôt reconstruit le service : deux à quatre minutes. De quoi tenir, pas de quoi pousser cinquante fois par jour. |
+| **Aucune sauvegarde automatique** | À faire soi-même : `pg_dump` régulier depuis un poste, et copie du bucket. Une sauvegarde jamais restaurée n'est pas une sauvegarde. |
+| **Données hébergées hors du pays** | La limite la plus sérieuse. Des plans de lotissement, des titres fonciers et des dossiers nominatifs de demandeurs relèvent d'une décision de la Direction, pas d'un choix technique fait en configurant un service gratuit. |
 
 **Conclusion honnête.** Cette configuration est excellente pour montrer la
-plateforme à la Direction, faire tester les agents et emporter la décision. Elle
-n'est pas un cadre acceptable pour les archives réelles de la commune.
+plateforme, faire tester les agents et emporter la décision. Elle n'est pas un
+cadre acceptable pour les archives réelles de la commune.
 
-Pour la production, deux voies, chiffrées dans `docs/03-deploiement-maintenance.md` :
-un VPS à quelques euros par mois (Docker Compose complet, sauvegardes maîtrisées),
-ou un serveur à la mairie (souveraineté totale, mais onduleur et sauvegarde hors
-site indispensables). Dans les deux cas, on retrouve le worker Celery, un disque
-persistant et des téléversements sans limite artificielle.
+---
+
+## 9. Si un de ces services est inaccessible
+
+Selon l'endroit d'où vous travaillez, certains hébergeurs refusent les
+inscriptions ou sont injoignables. Plutôt que d'en essayer dix, changez
+d'approche : **un VPS à quelques euros par mois** règle tout d'un coup.
+
+```bash
+git clone <votre dépôt> /opt/dcuhat && cd /opt/dcuhat
+cp .env.example .env      # renseigner les mots de passe
+docker compose up -d --build
+docker compose exec api python manage.py initialiser_dcuhat --admin-email=...
+```
+
+Vous retrouvez alors la pile complète : PostGIS, MinIO, Redis, le worker
+Celery, un disque persistant, aucune mise en veille, aucun plafond artificiel
+sur la taille des fichiers, et les sauvegardes sous votre contrôle
+(`deploy/sauvegarde.sh`). C'est de toute façon ce que recommande
+`docs/03-deploiement-maintenance.md` pour un vrai pilote.
+
+Un hébergeur situé en Guinée ou dans la sous-région ajoute un argument qui pèse
+davantage que le prix : la souveraineté des données de la commune.

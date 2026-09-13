@@ -132,11 +132,24 @@ _sslmode = env("POSTGRES_SSLMODE", "") or (
     "require" if not _reglages_base["HOST"] in ("127.0.0.1", "localhost", "db") else ""
 )
 
+_options_base = {}
+if _sslmode:
+    _options_base["sslmode"] = _sslmode
+
+# Certaines bases hebergees (Supabase notamment) installent PostGIS dans un
+# schema `extensions` plutot que dans `public`. Le type `geometry` reste alors
+# introuvable si ce schema n'est pas dans le chemin de recherche, avec une
+# erreur peu parlante au moment des migrations. La valeur habituelle est
+# `public,extensions`.
+_search_path = env("POSTGRES_SEARCH_PATH", "")
+if _search_path:
+    _options_base["options"] = f"-c search_path={_search_path}"
+
 DATABASES = {
     "default": {
         "ENGINE": "django.contrib.gis.db.backends.postgis",
         "CONN_MAX_AGE": int(env("POSTGRES_CONN_MAX_AGE", "60")),
-        "OPTIONS": {"sslmode": _sslmode} if _sslmode else {},
+        "OPTIONS": _options_base,
         **_reglages_base,
     }
 }

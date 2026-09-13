@@ -26,6 +26,11 @@ l'application.
 Supabase l'active en un clic, et fournit en prime le stockage des fichiers —
 d'où deux comptes au lieu de quatre.
 
+**Pourquoi pas Vercel.** Techniquement, Vercel ferait très bien l'affaire. Mais
+son offre gratuite (« Hobby ») est réservée aux projets **personnels et non
+commerciaux** : une plateforme livrée à une direction communale n'entre pas dans
+ce cadre. Cloudflare Pages n'impose pas cette restriction.
+
 **Pourquoi Cloudflare Pages pour l'interface.** Render facture la bande
 passante au-delà de 5 Go par mois, tous services confondus. Servir l'interface
 depuis Cloudflare Pages, dont l'offre gratuite ne la facture pas, sort
@@ -166,6 +171,9 @@ CORS_ALLOWED_ORIGINS=https://<votre-interface>.pages.dev
 # Une seule ligne : celle du Session pooler, collée telle quelle.
 DATABASE_URL=postgresql://postgres.<ref>:<mot de passe>@aws-0-<région>.pooler.supabase.com:5432/postgres
 POSTGRES_SSLMODE=require
+# Supabase installe PostGIS dans un schéma `extensions`. À ajouter seulement si
+# les migrations échouent sur « type geometry does not exist ».
+# POSTGRES_SEARCH_PATH=public,extensions
 
 OBJECT_STORAGE_BACKEND=s3
 S3_ENDPOINT_URL=https://<ref>.storage.supabase.co/storage/v1/s3

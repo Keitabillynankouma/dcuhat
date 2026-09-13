@@ -9,6 +9,17 @@ set -e
 echo "[DCUHAT] Migrations..."
 python manage.py migrate --noinput
 
+# Initialisation unique de la plateforme (services, arborescence, compte
+# administrateur). Declenchee par une variable d'environnement parce que les
+# offres gratuites n'offrent pas d'acces shell. La commande est idempotente,
+# mais on retire la variable apres le premier demarrage reussi.
+if [ -n "${DCUHAT_INIT_ADMIN_EMAIL:-}" ]; then
+    echo "[DCUHAT] Initialisation de la plateforme..."
+    python manage.py initialiser_dcuhat \
+        --admin-email="${DCUHAT_INIT_ADMIN_EMAIL}" \
+        --admin-password="${DCUHAT_INIT_ADMIN_PASSWORD:-}"
+fi
+
 echo "[DCUHAT] Fichiers statiques..."
 python manage.py collectstatic --noinput
 

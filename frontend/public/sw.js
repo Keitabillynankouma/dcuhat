@@ -107,6 +107,11 @@ self.addEventListener("fetch", (evenement) => {
     return;
   }
 
+  // Tout ce qui reste et qui n'est pas servi par cette origine (URL signees
+  // du stockage objet, par exemple) est laisse au navigateur : le mettre en
+  // cache n'aurait aucun sens, ces adresses expirent.
+  if (url.origin !== self.location.origin) return;
+
   // Coquille applicative.
   evenement.respondWith(
     caches.open(CACHE_COQUILLE).then(async (cache) => {

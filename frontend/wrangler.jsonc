@@ -1,0 +1,17 @@
+{
+  // Configuration du déploiement Cloudflare Workers (interface statique).
+  //
+  // Deux réglages font tout le travail :
+  //  - "directory" : ce sont les fichiers COMPILÉS qu'il faut publier, pas les
+  //    sources. Sans cette ligne, Cloudflare sert le dossier du projet tel quel
+  //    et le navigateur reçoit un index.html qui pointe vers /src/main.tsx.
+  //  - "not_found_handling" : l'application est une SPA. Toute adresse inconnue
+  //    doit rendre index.html pour que React Router puisse faire son travail,
+  //    sinon /connexion et /explorateur renvoient une 404.
+  "name": "dcuhat",
+  "compatibility_date": "2026-09-13",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}
